@@ -68,6 +68,7 @@ info_list=(
     "用户名 (Username)"
     "跳过证书验证 (allowInsecure)"
     "拥塞控制算法 (congestion_control)"
+    "短 ID (shortId)"
 )
 change_list=(
     "更改协议"
@@ -84,13 +85,21 @@ change_list=(
     "更改伪装网站"
     "更改用户名 (Username)"
 )
+# Reality SNI 候选: 全部实测支持 TLS1.3 + X25519 + HTTP/2 (ALPN h2)
+# 规避被滥用最严重的 apple.com / cloudflare.com 系列 (易被扫描器标记)
+# 因地制宜: 服务器在 AWS 用 awsstatic, 在 GCP 用 storage.googleapis.com 等
 servername_list=(
-    www.amazon.com
+    aws.amazon.com
+    d1.awsstatic.com
+    storage.googleapis.com
+    www.microsoft.com
+    www.bing.com
+    api.github.com
+    github.com
+    www.samsung.com
+    www.nvidia.com
     www.ebay.com
     www.paypal.com
-    www.cloudflare.com
-    dash.cloudflare.com
-    aws.amazon.com
 )
 
 # shuf fallback for systems without shuf (e.g., Alpine BusyBox)
@@ -155,6 +164,15 @@ get_pbk() {
     is_tmp_pbk=($($is_core_bin generate reality-keypair | sed 's/.*://'))
     is_public_key=${is_tmp_pbk[1]}
     is_private_key=${is_tmp_pbk[0]}
+    # persist public key for client config generation (no dirty outbound-tag hack)
+    [[ $is_public_key ]] && echo "$is_public_key" >$is_conf_dir/.pbk
+}
+
+# random reality short id (8 hex chars); openssl missing -> /dev/urandom fallback
+get_short_id() {
+    is_tmp_short_id=$(openssl rand -hex 4 2>/dev/null)
+    [[ ! $is_tmp_short_id ]] && is_tmp_short_id=$(head -c 4 /dev/urandom | od -An -tx1 | tr -d ' \n')
+    echo $is_tmp_short_id
 }
 
 show_list() {
@@ -332,8 +350,7 @@ create() {
         is_json_file=$is_conf_dir/$is_config_name
         # get json
         [[ $is_change || ! $json_str ]] && get protocol $2
-        [[ $net == "reality" ]] && is_add_public_key=",outbounds:[{type:\"direct\"},{tag:\"public_key_$is_public_key\",type:\"direct\"}]"
-        is_new_json=$(jq "{inbounds:[{tag:\"$is_config_name\",type:\"$is_protocol\",$is_listen,listen_port:$port,$json_str}]$is_add_public_key}" <<<{})
+        is_new_json=$(jq "{inbounds:[{tag:\"$is_config_name\",type:\"$is_protocol\",$is_listen,listen_port:$port,$json_str}]}" <<<{})
         [[ $is_test_json ]] && return # tmp test
         # only show json, dont save to file.
         [[ $is_gen ]] && {
@@ -378,7 +395,7 @@ create() {
         manage restart caddy &
         ;;
     config.json)
-        is_log='log:{output:"/var/log/'$is_core'/access.log",level:"info","timestamp":true}'
+        is_log='log:{output:"/var/log/'$is_core'/access.log",level:"warn","timestamp":true}'
         is_dns='dns:{}'
         is_ntp='ntp:{"enabled":true,"server":"time.apple.com"},'
         if [[ -f $is_config_json ]]; then
@@ -1128,7 +1145,13 @@ get() {
             if [[ $is_private_key ]]; then
                 is_reality=1
                 net_type+=reality
-                is_public_key=${is_public_key/public_key_/}
+                if [[ -f $is_conf_dir/.pbk ]]; then
+                    is_public_key=$(cat $is_conf_dir/.pbk)
+                else
+                    # fallback: legacy config stores public key in outbounds[1].tag
+                    is_public_key=${is_public_key/public_key_/}
+                fi
+                is_short_id=$(jq -r '(.inbounds[0].tls.reality.short_id[0]) // empty' <<<$is_json_str 2>/dev/null)
             fi
             is_socks_user=$username
             is_socks_pass=$password
@@ -1249,7 +1272,9 @@ get() {
             net=reality
             [[ ! $is_servername ]] && is_servername=$is_random_servername
             [[ ! $is_private_key ]] && get_pbk
-            is_json_add="tls:{enabled:true,server_name:\"$is_servername\",reality:{enabled:true,handshake:{server:\"$is_servername\",server_port:443},private_key:\"$is_private_key\",short_id:[\"\"]}}"
+            [[ ! $is_short_id ]] && is_short_id=$(get_short_id)
+            [[ $is_public_key ]] && echo "$is_public_key" >$is_conf_dir/.pbk
+            is_json_add="tls:{enabled:true,server_name:\"$is_servername\",reality:{enabled:true,handshake:{server:\"$is_servername\",server_port:443},private_key:\"$is_private_key\",short_id:[\"$is_short_id\"]}}"
             [[ $is_lower =~ "http" ]] && {
                 is_json_add="$is_json_add,transport:{type:\"http\"}"
             } || {
@@ -1434,7 +1459,7 @@ info() {
     reality)
         is_color=41
         is_can_change=(0 1 5 9 10)
-        is_info_show=(0 1 2 3 15 4 8 16 17 18)
+        is_info_show=(0 1 2 3 15 4 8 16 17 18 22)
         is_flow=xtls-rprx-vision
         is_net_type=tcp
         [[ $net_type =~ "http" || ${is_new_protocol,,} =~ "http" ]] && {
@@ -1442,8 +1467,8 @@ info() {
             is_net_type=h2
             is_info_show=(${is_info_show[@]/15/})
         }
-        is_info_str=($is_protocol $is_addr $port $uuid $is_flow $is_net_type reality $is_servername chrome $is_public_key)
-        is_url="$is_protocol://$uuid@$is_addr:$port?encryption=none&security=reality&flow=$is_flow&type=$is_net_type&sni=$is_servername&pbk=$is_public_key&fp=chrome#233boy-$net-$is_addr"
+        is_info_str=($is_protocol $is_addr $port $uuid $is_flow $is_net_type reality $is_servername chrome $is_public_key $is_short_id)
+        is_url="$is_protocol://$uuid@$is_addr:$port?encryption=none&security=reality&flow=$is_flow&type=$is_net_type&sni=$is_servername&pbk=$is_public_key&sid=$is_short_id&fp=chrome#233boy-$net-$is_addr"
         ;;
     anytls)
         is_can_change=(0 1 4)

@@ -101,10 +101,10 @@ load() {
     . $is_sh_dir/src/$1
 }
 
-# wget add --no-check-certificate
+# wget (TLS verification kept ON — do NOT disable cert check for downloads)
 _wget() {
     [[ $proxy ]] && export https_proxy=$proxy
-    wget --no-check-certificate $*
+    wget $*
 }
 
 # print a mesage
@@ -418,6 +418,13 @@ main() {
         cp -rf $tmpdir/testzip/* $is_core_dir/bin
     else
         tar zxf $is_core_ok --strip-components 1 -C $is_core_dir/bin
+    fi
+
+    # verify core binary runs; abort install if tampered/incomplete download
+    chmod +x $is_core_bin
+    if ! $is_core_bin version &>/dev/null; then
+        msg err "${is_core_name} 二进制自检失败, 下载可能不完整或被篡改. 安装中止."
+        exit_and_del_tmpdir
     fi
 
     # add alias

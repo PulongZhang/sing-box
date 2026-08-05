@@ -2,6 +2,17 @@
 
 最好用的 sing-box 一键安装脚本 & 管理脚本
 
+# 安全优化 (本分支相对上游的改动)
+
+- 移除全局 `--no-check-certificate` (install.sh) — 所有下载强制 TLS 证书校验
+- 安装后二进制自检 (`sing-box version` 失败即中止, 防下载不完整/被篡改)
+- Reality SNI 候选扩充至 11 个且全部实测支持 TLS1.3 + X25519 + HTTP/2 (ALPN h2)
+- 移除被滥用最严重的 `www.cloudflare.com` / `dash.cloudflare.com` / `apple.com` 系列 SNI
+- Reality `short_id` 默认随机 8 位 hex (原为空, 一键脚本指纹), 客户端链接自动带 `sid=`
+- 公钥持久化到 `conf/.pbk`, 不再往服务端配置里塞 `public_key_xxx` 假 outbound
+- 默认日志级别 `info` → `warn` (不再每连接刷盘)
+- 自检工具: `echo | openssl s_client -connect <sni>:443 -servername <sni> -tls1_3 -alpn h2 | grep ALPN`
+
 # 特点
 
 - 快速安装
